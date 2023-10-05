@@ -1,0 +1,120 @@
+ecosystem <- new.env()
+asset_list <- function(ticker, ..., from = "2015-01-01", to = Sys.Date(), price = "Cl", environment){
+  getSymbols(c(ticker, ...), env = environment, from = from, to = to, src = 'yahoo')
+  assets <- do.call(merge, eapply(ecosystem, get(price)))
+  return(assets)
+  # Add warning for NAs or incongrous lengths
+}
+assets <- asset_list('AAPL', 'MSFT', environment = ecosystem)
+
+factor_ranks <- function(factor1, factor2, ..., assets, weights = c()){
+  factors <- list(factor1, factor2, ...)
+  if(length(weights)!= length(factors)){
+    stop("Error! The length of weights must be equal to the length of factors")
+  }
+  # Step 1: Apply factors to each asset price 
+  factor <- lapply(factors, function(func_name) {
+  lapply(1:ncol(assets), function(i) {
+    asset_column <- assets[, i, drop = FALSE]
+    result_column <- do.call(get(func_name), list(asset_column))
+    
+    # Naming the resulting time series
+    colname <- paste0(colnames(assets)[i], "_", func_name)
+    colnames(result_column) <- colname
+    
+    return(result_column)
+  })
+})
+  
+names(result) <- func_list
+
+  # Step 2: Rank each time series within "factor" by row. With 1 being the greatest value. Store this within a variable called "ranked_factors"
+  
+  as
+  
+}
+
+############VERSION 2################
+###########################################################
+This is where we will document code and our findings. At the end of the competition, we will compile this information in a collective article to showcase our work in our portfolios. Please paste your most updated code here so we are all familiar with our progress.
+
+################## FACTOR BACKTESTING LIBRARY ###################
+################## By Noah Tover ####################################
+###################################################################
+# Future Improvements: Vectorization for efficiency + paralellized ###############
+# Example function call factor_ranks(factor1 = "CTI", factor2 = "SMA", assets = assets, weights = c(.5, .5))
+ecosystem <- new.env()
+asset_list <- function(ticker, ..., from = "2015-01-01", to = Sys.Date(), price = "Cl", environment){
+  getSymbols(c(ticker, ...), env = environment, from = from, to = to, src = 'yahoo')
+  assets <- do.call(merge, eapply(ecosystem, get(price)))
+  return(assets)
+  # Add warning for NAs or incongruous lengths
+}
+assets <- asset_list('AAPL', 'MSFT', environment = ecosystem)
+ 
+factor_ranks <- function(factor1, factor2, ..., assets, weights = c()) {
+  factors <- list(factor1, factor2, ...)
+  
+  # Validate weights
+  if (is.vector(weights) && length(weights) != length(factors)) {
+    stop("Error! The length of weights must be equal to the length of factors")
+  } else if (is.xts(weights) & length(index(weights) != length(index(assets[1]) {
+    stop(“Error! The length of weights must be equal to the length of factors”)
+}
+  
+  # Step 1: Apply factors to each asset price 
+  result <- lapply(factors, function(func_name) {
+    lapply(1:ncol(assets), function(i) {
+      asset_column <- assets[, i, drop = FALSE]
+      result_column <- do.call(get(func_name), list(asset_column))
+      
+      # Naming the resulting time series
+      colname <- paste0(colnames(assets)[i], "_", func_name)
+      colnames(result_column) <- colname
+      
+      return(result_column)
+    })
+  })
+  
+  # Merge the xts objects within each element of 'result' into a single xts object.
+  result_merged <- lapply(result, function(func_result) {
+    Reduce(merge, func_result)
+  })
+
+  # Step 2: Rank each time series within "factor" by row. 
+  rank_without_na <- function(row) {
+    na_indices <- is.na(row)
+    ranks <- numeric(length(row))
+    
+    if (any(na_indices)) {
+      ranks[!na_indices] <- rank(row[!na_indices])
+      ranks[na_indices] <- NA
+    } else {
+      ranks <- rank(row)
+    }
+    return(ranks)
+  }
+  
+  ranked_factors <- lapply(result_merged, function(x) {
+    t(apply(x, MARGIN = 1, FUN = rank_without_na))
+  })
+  
+  # Step 3: Weight each factor
+  if (is.vector(weights)) {
+    weighted_factors <- lapply(seq_along(ranked_factors), function(i) {
+      ranked_factors[[i]] * weights[i]
+    })
+  } else if (is.xts(weights)) {
+    weighted_factors <- lapply(names(ranked_factors), function(factor_name) {
+      ranked_factors[[factor_name]] * weights[, factor_name, drop = FALSE]
+    })
+  } else {
+    stop("Weights must be a time series of equal length to assets, or a vector of length equal to factors")
+  }
+ weighted_factors <- Reduce("+", weighted_factors) #Sum the factors to come up with a cumulative weighted factor ranking
+ return(weighted_factors)
+}
+
+
+## next thing to do: create allocation function to determine portfolio weights, and portfolio constructor function. 
+## Last thing: Bug checks, lag factor indicator + more stops. Use paralell apply. 
