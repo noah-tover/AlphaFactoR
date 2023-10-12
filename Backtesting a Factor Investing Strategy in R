@@ -1,88 +1,33 @@
-ecosystem <- new.env()
-asset_list <- function(ticker, ..., from = "2015-01-01", to = Sys.Date(), price = "Cl", environment){
-  getSymbols(c(ticker, ...), env = environment, from = from, to = to, src = 'yahoo')
-  assets <- do.call(merge, eapply(ecosystem, get(price)))
-  return(assets)
-  # Add warning for NAs or incongrous lengths
-}
-assets <- asset_list('AAPL', 'MSFT', environment = ecosystem)
+library(quantmod)
+library(parallel)
+library(PerformanceAnalytics)
 
-factor_ranks <- function(factor1, factor2, ..., assets, weights = c()){
-  factors <- list(factor1, factor2, ...)
-  if(length(weights)!= length(factors)){
-    stop("Error! The length of weights must be equal to the length of factors")
-  }
-  # Step 1: Apply factors to each asset price 
-  factor <- lapply(factors, function(func_name) {
-  lapply(1:ncol(assets), function(i) {
-    asset_column <- assets[, i, drop = FALSE]
-    result_column <- do.call(get(func_name), list(asset_column))
-    
-    # Naming the resulting time series
-    colname <- paste0(colnames(assets)[i], "_", func_name)
-    colnames(result_column) <- colname
-    
-    return(result_column)
-  })
-})
-  
-names(result) <- func_list
+from = '2015-01-01'
+to = '2023-01-01'
+mc.cores = (detectCores() - 1) # Use all cores minus one
 
-  # Step 2: Rank each time series within "factor" by row. With 1 being the greatest value. Store this within a variable called "ranked_factors"
-  
-  as
-  
-}
+factor_ranks <- function(factor1, ..., arguments = list(), assets, weights = c()) {
+  factors <- list(factor1, ...)
 
-############VERSION 2################
-###########################################################
-This is where we will document code and our findings. At the end of the competition, we will compile this information in a collective article to showcase our work in our portfolios. Please paste your most updated code here so we are all familiar with our progress.
-
-################## FACTOR BACKTESTING LIBRARY ###################
-################## By Noah Tover ####################################
-###################################################################
-# Future Improvements: Vectorization for efficiency + paralellized ###############
-# Example function call factor_ranks(factor1 = "CTI", factor2 = "SMA", assets = assets, weights = c(.5, .5))
-ecosystem <- new.env()
-asset_list <- function(ticker, ..., from = "2015-01-01", to = Sys.Date(), price = "Cl", environment){
-  getSymbols(c(ticker, ...), env = environment, from = from, to = to, src = 'yahoo')
-  assets <- do.call(merge, eapply(ecosystem, get(price)))
-  return(assets)
-  # Add warning for NAs or incongruous lengths
-}
-assets <- asset_list('AAPL', 'MSFT', environment = ecosystem)
- 
-factor_ranks <- function(factor1, factor2, ..., assets, weights = c()) {
-  factors <- list(factor1, factor2, ...)
-  
-  # Validate weights
-  if (is.vector(weights) && length(weights) != length(factors)) {
-    stop("Error! The length of weights must be equal to the length of factors")
-  } else if (is.xts(weights) & length(index(weights) != length(index(assets[1]) {
-    stop(“Error! The length of weights must be equal to the length of factors”)
-}
-  
-  # Step 1: Apply factors to each asset price 
-  result <- lapply(factors, function(func_name) {
-    lapply(1:ncol(assets), function(i) {
-      asset_column <- assets[, i, drop = FALSE]
-      result_column <- do.call(get(func_name), list(asset_column))
+  result <- mclapply(seq_along(factors), function(i) {
+    func_name <- factors[[i]]
+    func_args <- arguments[[i]]
+    mclapply(1:ncol(assets), function(j) {
+      asset_column <- assets[, j, drop = FALSE]
+      args_list <- c(list(asset_column), func_args)
+      result_column <- do.call(get(func_name), args_list)
       
-      # Naming the resulting time series
-      colname <- paste0(colnames(assets)[i], "_", func_name)
+      colname <- paste0(colnames(assets)[j], "_", func_name)
       colnames(result_column) <- colname
-      
       return(result_column)
     })
   })
-  
-  # Merge the xts objects within each element of 'result' into a single xts object.
-  result_merged <- lapply(result, function(func_result) {
+
+  result_merged <- mclapply(result, function(func_result) {
     Reduce(merge, func_result)
   })
-
-  # Step 2: Rank each time series within "factor" by row. 
-  rank_without_na <- function(row) {
+  
+   rank_without_na <- function(row) {
     na_indices <- is.na(row)
     ranks <- numeric(length(row))
     
@@ -94,27 +39,182 @@ factor_ranks <- function(factor1, factor2, ..., assets, weights = c()) {
     }
     return(ranks)
   }
+
   
-  ranked_factors <- lapply(result_merged, function(x) {
+  result_merged <- mclapply(result_merged, stats::lag, 1)
+  ranked_factors <- mclapply(result_merged, function(x) {
     t(apply(x, MARGIN = 1, FUN = rank_without_na))
   })
-  
-  # Step 3: Weight each factor
+
   if (is.vector(weights)) {
-    weighted_factors <- lapply(seq_along(ranked_factors), function(i) {
-      ranked_factors[[i]] * weights[i]
+    weighted_factors <- mclapply(seq_along(ranked_factors), function(i) {
+      ranked_factors[[i]] * weights[i] 
     })
   } else if (is.xts(weights)) {
-    weighted_factors <- lapply(names(ranked_factors), function(factor_name) {
+    weighted_factors <- mclapply(names(ranked_factors), function(factor_name) {
       ranked_factors[[factor_name]] * weights[, factor_name, drop = FALSE]
     })
   } else {
     stop("Weights must be a time series of equal length to assets, or a vector of length equal to factors")
   }
- weighted_factors <- Reduce("+", weighted_factors) #Sum the factors to come up with a cumulative weighted factor ranking
- return(weighted_factors)
+  
+  weighted_factors <- Reduce("+", weighted_factors)
+  weighted_factors <- as.xts(weighted_factors)
+  return(weighted_factors)
+}
+
+## next thing to do: create allocation function to determine portfolio weights, and portfolio constructor function. 
+## Last thing: Bug checks, rethink for look ahead bias + more stops. 
+allocate <- function(factor_ranks, assets, reallocation_period = 12, n_long, n_short, long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE) {
+  if(n_short != length(short_weights) || n_long != length(long_weights)){
+    stop("Number of selections must match weights length")
+  }
+  # Create a function to allocate weights based on ranking
+  allocate_weights <- function(rank_row, n_long, n_short, long_weights, short_weights) {
+    weights <- numeric(length(rank_row))
+    
+    # Check for NA values in the rank_row
+    if (any(is.na(rank_row))) {
+      return(rep(NA, length(rank_row)))  # return zero weights if any NA is found
+    }
+    # Allocate long weights
+    if (n_long > 0) {
+      top_indices <- order(rank_row, decreasing = long_decreasing)[1:n_long]
+      weights[top_indices] <- long_weights
+    } 
+    
+    # Allocate short weights
+    if (n_short > 0) {
+      bottom_indices <- order(rank_row, decreasing = short_decreasing)[1:n_short]
+      weights[bottom_indices] <- short_weights
+    }
+    
+    return(weights)
+  }
+  
+  # Apply the allocate_weights function to each time point
+  allocation <- apply(factor_ranks, 1, allocate_weights, n_long = n_long, n_short = n_short, long_weights = long_weights, short_weights = short_weights)
+  
+  ## Change to more efficient solution later ##
+  allocations <- xts(t(allocation), order.by = index(factor_ranks))
+  index(allocations) <- as.Date(index(allocations))
+  allocations <- allocations[rowSums(!is.na(allocations)) > 0]# Remove period where all factors are NA
+  reallocations <- allocations[seq(1, length(index(allocations)), by = reallocation_period)]
+  allocations <- merge(reallocations, index(allocations))
+  allocations <- na.locf(allocations)
+  
+  return(allocations)
+}
+
+factor_backtest <- function(factor1, ..., arguments = list(), facdata, assets, weights = c(), reallocation_period, n_long, n_short, long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE){
+  # Modified factor_ranks function to include 'arguments' parameter
+factor_output <- factor_ranks(factor1 = factor1, ... = ..., arguments = arguments, assets = facdata, weights = weights)
+allocations <- allocate(factor_ranks = factor_output, assets = assets, reallocation_period = reallocation_period, n_long = n_long, n_short = n_short, long_weights = long_weights, short_weights = short_weights, long_decreasing = long_decreasing, short_decreasing = short_decreasing)
+returns <- Return.calculate(assets)
+returns <- returns[index(allocations)]
+colnames(allocations) <- colnames(returns)
+portfolio <- Return.portfolio(returns, weights = allocations)
+portfolio <- merge(portfolio, returns)
+return(allocations)
+}
+tickers <- c('AAPL', 'MSFT', 'MS', 'JPM', 'MCD', 'WM')
+ecosystem <- new.env()
+getSymbols(tickers, from= from, to= to, env=ecosystem)
+datalist <- eapply(ecosystem, Ad)
+volumelist <- eapply(ecosystem, Vo)
+volumes <- do.call(merge, volumelist)
+assets <- do.call(merge, datalist)
+assets <- na.approx(assets)
+volumes <- na.approx(volumes)
+dividends <- function(tickers, from, to){
+  lapply(tickers, function(ticker){
+    dividends <- getDividends(ticker, from = from, to = to)
+    if(length(dividends) <= 1){
+      price <- getSymbols(ticker, from = from, to = to, auto.assign = FALSE)
+      price <- Cl(price)
+      zerodividends <- ifelse(is.na(price), NA, 0)
+      zerodividends <- as.xts(zerodividends, order.by = index(price))
+      colnames(zerodividends) <- ticker
+      return(zerodividends)
+    } else {
+      return(Return.calculate(dividends))
+    }
+  })
+}
+
+divs <- dividends(tickers = tickers, from = from, to = to)
+
+divs <- Reduce(merge, divs)
+divs <- lag(divs, 1)
+divs <- na.locf(divs)
+## Ensure columns match 
+# Remove the suffixes to compare the base tickers
+base_tickers_assets <- gsub("\\.Adjusted", "", colnames(assets))
+base_tickers_divs <- gsub("\\.div", "", colnames(divs))
+base_tickers_volumes <- gsub("\\.Volume", "", colnames(volumes))
+
+
+# Find the matching base tickers
+matching_tickers <- intersect(base_tickers_assets, base_tickers_divs)
+
+# Reconstruct the full column names for subsetting
+matching_colnames_assets <- paste0(matching_tickers, ".Adjusted")
+matching_colnames_divs <- paste0(matching_tickers, ".div")
+
+# Subset the data to include only the matching columns
+assets <- assets[, matching_colnames_assets]
+divs <- divs[, matching_colnames_divs]
+matching_tickers <- intersect(base_tickers_volumes, base_tickers_divs)
+matching_colnames_volumes <- paste0(matching_tickers, ".Volume")
+volumes <- volumes[, matching_colnames_volumes]
+
+
+
+# Divs and assets have different indexes. Does this affect the code?
+divfactor <- factor_backtest(factor1 = "momentum", arguments = list(list(n = 15)), facdata = divs, assets = assets, weights = c(1), reallocation_period = 20, n_long = 3, n_short = 3, long_weights = c(.4, .3, .3), short_weights = c(-.4, -.3, -.3), long_decreasing = FALSE, short_decreasing = TRUE)
+rsifactor <- factor_backtest(factor1 = "RSI", arguments = list(list(n = 7)), facdata = assets, assets = assets, weights = c(1), reallocation_period = 15, n_long = 3, n_short = 3, long_weights = c(.4, .3, .3), short_weights = c(-.4, -.3, -.3), long_decreasing = TRUE, short_decreasing = FALSE)
+volumectifactor <- factor_backtest(factor1 = "CTI", arguments = list(list(n = 15)), facdata = volumes, assets = assets, weights = c(1), reallocation_period = 15, n_long = 3, n_short = 3, long_weights = c(.4, .3, .3), short_weights = c(-.4, -.3, -.3), long_decreasing = FALSE, short_decreasing = TRUE)
+
+
+## Vol filter
+index <- 'SPY'
+n <- 30
+nrank <- 260
+
+index <- getSymbols(index, auto.assign = FALSE)
+vol <- runSD(Ad(index), n = n)
+vol <- runPercentRank(vol, n = nrank)
+vol <- stats::lag(vol, 1)
+# Ensure that the dimensions match
+vol <- vol[index(divfactor)]
+
+# Initialize filtered as an empty xts object with the same structure as divfactor
+filtered <- xts(matrix(NA, nrow = nrow(divfactor), ncol = ncol(divfactor)), order.by=index(divfactor))
+colnames(filtered) <- colnames(divfactor)
+
+# Conditionally assign rows
+# Initialize counter
+counter <- 0
+rebal_period <- 30  # Set x to the number of rows you want to affect
+threshold <- 0.5
+# Conditionally assign rows
+for (i in 1:nrow(divfactor)) {
+  if (is.na(vol[i])) {
+    filtered[i,] <- rsifactor[i,]  # Use row from momentumfactor when vol is NA
+  } else if (vol[i] > threshold) {
+    filtered[i,] <- divfactor[i,]
+    counter <- rebal_period  # Set counter to x when condition is met
+  } else if (counter > 0) {
+    filtered[i,] <- divfactor[i,]
+    counter <- counter - 1  # Decrement counter
+  } else if (vol[i] < threshold){
+    filtered[i,] <- rsifactor[i,]
+  }
 }
 
 
-## next thing to do: create allocation function to determine portfolio weights, and portfolio constructor function. 
-## Last thing: Bug checks, lag factor indicator + more stops. Use paralell apply. 
+returns <- Return.calculate(assets)
+returns <- returns[index(filtered)]
+portfolio <- Return.portfolio(returns, weights = filtered)
+portfolio <- merge(portfolio, returns)
+charts.PerformanceSummary(portfolio, main = "Mixed Factor Portfolio", colorset = rainbow12equal)
