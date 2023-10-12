@@ -1,0 +1,58 @@
+# Load necessary libraries
+library(foreach)
+library(doParallel)
+library(xts)
+library(PerformanceAnalytics)
+# Set up parallel backend
+# (Note: Adjust the number of cores according to your system)
+cl <- makeCluster(detectCores() - 1)  # Use all cores minus one
+registerDoParallel(cl)
+# Generate parameter grid 
+paramGrid <- expand.grid(reallocation_period = seq(10, 50, by=5),
+                         argument = seq(2, 50, by= 2))
+# Grid search using foreach
+results <- foreach(i = 1:nrow(paramGrid), .packages = c("xts", "PerformanceAnalytics", "quantmod", "parallel")) %dopar% {
+  # Extract parameters for this iteration
+  params <- paramGrid[i, ]
+  
+  # Run factor_backtest with current parameters
+  portfolio <- factor_backtest(factor1 = "runSD",
+                               arguments = list(list(n = params$argument)),
+                               assets = assets, facdata = divs, weights = c(1),
+                               reallocation_period = params$reallocation_period,
+                               n_long = 2, n_short = 2,
+                               long_weights = c(.5, .5),
+                               short_weights = -c(.5, .5),
+                               long_decreasing = TRUE,
+                               short_decreasing = FALSE)
+  
+  # Compute annualized Sharpe Ratio
+  sharpe <- SharpeRatio.annualized(portfolio$portfolio.returns)
+  
+  # Introduce a 2-second buffer
+  
+  
+  return(list(params = params, sharpe = sharpe))
+}
+
+# Stop the cluster
+stopCluster(cl)
+
+
+
+# Convert the results list to a data frame
+results_df <- do.call(rbind, lapply(results, function(x) {
+  df <- x$params
+  df$sharpe <- as.numeric(x$sharpe)
+  return(df)
+}))
+# View the results
+color_breaks <- cut(results_df$argument, breaks = 5)  # Dividing 'z' into 5 intervals
+
+# Create a color palette
+palette <- rainbow(5)
+# Plot the scatter plot using plot() 
+plot(results_df$sharpe, results_df$reallocation_period, pch = 19, col = palette[color_breaks], 
+     main = "2D Scatter Plot with Color-coded Variable",
+   )
+legend("topright", legend = levels(color_breaks), fill = palette, title = "Z Variable")
