@@ -1,1 +1,120 @@
+##################################################################################################
+### factor_ranks assigns factor scores and then ranks each column in assets based on this score.##
+factor_ranks <- function(factor1, ..., arguments = list(), assets, weights = c()) {
+  factors <- list(factor1, ...)
 
+  result <- mclapply(seq_along(factors), function(i) {
+    func_name <- factors[[i]]
+    func_args <- arguments[[i]]
+    mclapply(1:ncol(assets), function(j) {
+      asset_column <- assets[, j, drop = FALSE]
+      args_list <- c(list(asset_column), func_args)
+      result_column <- do.call(get(func_name), args_list)
+      
+      colname <- paste0(colnames(assets)[j], "_", func_name)
+      colnames(result_column) <- colname
+      return(result_column)
+    })
+  })
+
+  result_merged <- mclapply(result, function(func_result) {
+    Reduce(merge, func_result)
+  })
+  
+   rank_without_na <- function(row) {
+    na_indices <- is.na(row)
+    ranks <- numeric(length(row))
+    
+    if (any(na_indices)) {
+      ranks[!na_indices] <- rank(row[!na_indices])
+      ranks[na_indices] <- NA
+    } else {
+      ranks <- rank(row)
+    }
+    return(ranks)
+  }
+
+  
+  result_merged <- mclapply(result_merged, stats::lag, 1)
+  ranked_factors <- mclapply(result_merged, function(x) {
+    t(apply(x, MARGIN = 1, FUN = rank_without_na))
+  })
+
+  if (is.vector(weights)) {
+    weighted_factors <- mclapply(seq_along(ranked_factors), function(i) {
+      ranked_factors[[i]] * weights[i] 
+    })
+  } else if (is.xts(weights)) {
+    weighted_factors <- mclapply(names(ranked_factors), function(factor_name) {
+      ranked_factors[[factor_name]] * weights[, factor_name, drop = FALSE]
+    })
+  } else {
+    stop("Weights must be a time series of equal length to assets, or a vector of length equal to factors")
+  }
+  
+  weighted_factors <- Reduce("+", weighted_factors)
+  weighted_factors <- as.xts(weighted_factors)
+  return(weighted_factors)
+}
+##################################################################################################################################################################################
+## allocate assigns positive and/or negative weights to each asset. this represents a long and/or short position respectively ##
+allocate <- function(factor_ranks, assets, reallocation_period = 12, n_long, n_short, long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE) {
+  if(n_short != length(short_weights) || n_long != length(long_weights)){
+    stop("Number of selections must match weights length")
+  }
+  # Create a function to allocate weights based on ranking
+  allocate_weights <- function(rank_row, n_long, n_short, long_weights, short_weights) {
+    weights <- numeric(length(rank_row))
+    
+    # Check for NA values in the rank_row
+    if (any(is.na(rank_row))) {
+      return(rep(NA, length(rank_row)))  # return zero weights if any NA is found
+    }
+    # Allocate long weights
+    if (n_long > 0) {
+      top_indices <- order(rank_row, decreasing = long_decreasing)[1:n_long]
+      weights[top_indices] <- long_weights
+    } 
+    
+    # Allocate short weights
+    if (n_short > 0) {
+      bottom_indices <- order(rank_row, decreasing = short_decreasing)[1:n_short]
+      weights[bottom_indices] <- short_weights
+    }
+    
+    return(weights)
+  }
+  
+  # Apply the allocate_weights function to each time point
+  allocation <- apply(factor_ranks, 1, allocate_weights, n_long = n_long, n_short = n_short, long_weights = long_weights, short_weights = short_weights)
+  
+  ## Change to more efficient solution later ##
+  allocations <- xts(t(allocation), order.by = index(factor_ranks))
+  index(allocations) <- as.Date(index(allocations))
+  allocations <- allocations[rowSums(!is.na(allocations)) > 0]# Remove period where all factors are NA
+  reallocations <- allocations[seq(1, length(index(allocations)), by = reallocation_period)]
+  allocations <- merge(reallocations, index(allocations))
+  allocations <- na.locf(allocations)
+  
+  return(allocations)
+}
+######################################################################################################################################################
+## factor_backtest combines the two above functions into one convenient function that returns the allocated weights. #################################
+## 
+factor_backtest <- function(factor1, ..., arguments = list(), facdata, assets, weights = c(), reallocation_period, n_long, n_short, long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE){
+  # Modified factor_ranks function to include 'arguments' parameter
+factor_output <- factor_ranks(factor1 = factor1, ... = ..., arguments = arguments, assets = facdata, weights = weights)
+allocations <- allocate(factor_ranks = factor_output, assets = assets, reallocation_period = reallocation_period, n_long = n_long, n_short = n_short, long_weights = long_weights, short_weights = short_weights, long_decreasing = long_decreasing, short_decreasing = short_decreasing)
+returns <- Return.calculate(assets)
+returns <- returns[index(allocations)]
+colnames(allocations) <- colnames(returns)
+portfolio <- Return.portfolio(returns, weights = allocations)
+portfolio <- merge(portfolio, returns)
+return(allocations)
+}
+### Upcoming updates:
+## 1. Better handling of NAs. Currently, the backtest begins when all assets are not NA. 
+## 2. Adding an argument for optional lagged rebalancing. Currently, assets are immediately rebalanced.This is unrealistic as orders take time to place. Therefore, I will add an option to set the next periods weight to 0 and then rebalance after
+## 3. More scalable / Better solution for asset column & factor column matching
+## 4. Add errors and checks to ensure data is in the proper format.
+## 5. Add bug diagnostic tools
