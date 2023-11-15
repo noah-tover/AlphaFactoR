@@ -118,3 +118,5 @@ return(allocations)
 ## 3. More scalable / Better solution for asset column & factor column matching
 ## 4. Add errors and checks to ensure data is in the proper format.
 ## 5. Add bug diagnostic tools
+## 6. Add an option for parallel processing, do not default to it.
+## 7. Faster processing, less code
