@@ -1,15 +1,20 @@
+## VERSION 3.0 ##
+## Main changes - Elimated n_long & n_short
+## Used a more intuitive method to get assets - although this shouldn't matter as this function should only be used with data containing delisted stocks.
+# Adding options to lag rebalancing
 library(quantmod)
 library(parallel)
 library(PerformanceAnalytics)
+
+
+
 tickers <- c('AAPL', 'MSFT', 'MS', 'JPM', 'MCD', 'WM')
 from <- '2015-01-01'
 to = '2023-01-01'
-ecosystem <- new.env()
-getSymbols(tickers, from= from, to= to, env=ecosystem)
-datalist <- eapply(ecosystem, Ad)
-assets <- do.call(merge, datalist)
+getSymbols(tickers, from = from, to = to, src = 'yahoo') # You should only use data which contains delisteds, not yahoo. This is for testing.
+# Concatenate data
+assets <- Ad(base::Reduce(cbind, lapply(tickers, get)))
 assets <- na.approx(assets)
-
 # The factor_ranks function assigns scores to financial assets based on various factors (like momentum, value, etc.), 
 # and then scores each asset based on how it ranks to these factors weighted by importance.
 # factors is a list containing one or more factors
@@ -57,6 +62,7 @@ factor_ranks <- function(factors, arguments, assets, weights = c()) {
       stop('There must be a weight for each factor')
     }
     weighted_factors <- mclapply(seq_along(ranked_factors), function(i) {
+      # Uses sweep() as ranked_factors is a matrix at this point
       sweep(ranked_factors[[i]], 1, weights[, i, drop = FALSE], `*`) # Multiplies by weights if weights are time series.
     })
   } else {
@@ -71,12 +77,15 @@ factor_ranks <- function(factors, arguments, assets, weights = c()) {
 
 # The allocate function assigns weights to assets based on their ranks. 
 # This represents taking long (positive weight) and/or short (negative weight) positions.
-allocate <- function(factor_ranks, assets, reallocation_period = 12, n_long, n_short, long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE) {
-  
+allocate <- function(factor_ranks, assets, reallocation_period = 12,long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE, lag_trades = FALSE) {
+  # These represent the number of assets to allocate weights to
+  n_long <- length(long_weights)
+  n_short <- length(short_weights)
   # Checks if the number of weights matches the number of assets to be selected.
-  if(n_short != length(short_weights) || n_long != length(long_weights)){
-    stop("Number of selections must match weights length")
+  if((n_long + n_short) > ncol(assets)){
+    stop('Total number of weights exceeds columns within assets. Reduce the number of weights.')
   }
+  
   # Internal function to allocate weights based on asset ranks.
   allocate_weights <- function(rank_row, n_long, n_short, long_weights, short_weights) {
     weights <- numeric(length(rank_row))  # Initializes a numeric vector for weights.
@@ -86,11 +95,17 @@ allocate <- function(factor_ranks, assets, reallocation_period = 12, n_long, n_s
       return(rep(NA, length(rank_row)))  # Returns NA weights if any NA is found in ranks.
       # Why? ******
     }
-
+    # There are two warnings: NA by coercion and Number of items to replace is not a multiple of replacement length
+    # The first is caused by ignoring NAs- this is intentional and the NAs are later removed
+    # The second is caused when assets is somewhat small and not all assets begin at the same time. This just means it will not use all of long_weights in this case - I will be adding options for how to handle this soon. 
     # Allocating weights for long positions.
     if (n_long > 0) {
       top_indices <- order(rank_row, decreasing = long_decreasing, na.last = 'keep')[1:n_long]  # Selects top-ranked assets.
-      weights[top_indices] <- long_weights  # Assigns long weights to top-ranked assets.
+      # If certain columns are NA, warn the user. 
+      # If certain columns are NA, 1:n_long is too long of a subset and returns NA for some subsets. This ignores it.
+      top_indices <- na.omit(top_indices) 
+      weights[top_indices] <- long_weights  # Assigns long weights to top-ranked assets while ignoring NAs 
+      # For small datasets, this will mean that some periods may not have all cash invested. I will fix this later by prompting the user with several options
       ## Next thing to do: trim long_weights and short_weights. If a column has an NA, this messes things up for small datasets.
       # Could also make a warning that weights are too long for number of assets ####
     } 
@@ -98,6 +113,7 @@ allocate <- function(factor_ranks, assets, reallocation_period = 12, n_long, n_s
     # Allocating weights for short positions.
     if (n_short > 0) {
       bottom_indices <- order(rank_row, decreasing = short_decreasing, na.last = 'keep')[1:n_short]  # Selects bottom-ranked assets.
+      bottom_indices <- na.omit(bottom_indices)
       weights[bottom_indices] <- short_weights  # Assigns short weights to bottom-ranked assets.
     }
     
@@ -109,18 +125,21 @@ allocate <- function(factor_ranks, assets, reallocation_period = 12, n_long, n_s
   
   # Converting the allocation matrix to an xts object and handling dates.
   allocations <- xts(t(allocation), order.by = index(factor_ranks))  # Transposing and converting to xts.
-  index(allocations) <- as.Date(index(allocations))  # Ensuring index is in Date format.
+  index(allocations) <- as.Date(index(allocations))  # Ensuring index is in Date format.# Why would it not be?
   allocations <- allocations[rowSums(!is.na(allocations)) > 0]  # Removing periods with all NA factors.
-  reallocations <- allocations[seq(1, length(index(allocations)), by = reallocation_period)]  # Applying reallocation period.
+  reallocation_indices <- seq(1, length(index(allocations)), by = reallocation_period)
+  reallocations <- allocations[reallocation_indices]  # Applying reallocation period.
   allocations <- merge(reallocations, index(allocations))  # Merging reallocations with the original index.
-  allocations <- na.locf(allocations)  # Carrying forward non-NA values.
-  
+  allocations <- na.locf(allocations)  # Carrying forward non-NA values to carry forward positions
+  if(lag_trades == TRUE){
+  allocations[reallocation_indices,] <- 0  # Apply reallocation lag for realism
+  }
   return(allocations)  # Returns the final allocation weights.
 }
 # The factor_backtest function combines factor ranking and allocation into one streamlined process.
 # It returns the allocated weights based on the specified factors and their corresponding ranks.
 
-factor_backtest <- function(factors, arguments, assets, weights = c(), reallocation_period, n_long, n_short, long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE) {
+factor_backtest <- function(factors, arguments, assets, weights = c(), reallocation_period,long_weights = c(), short_weights = c(), long_decreasing = TRUE, short_decreasing = FALSE, lag_trades = FALSE) {
   # Check if the length of factors and arguments list match
   if (length(factors) != length(arguments)) {
     stop("Length of factors must match length of arguments")
@@ -129,7 +148,7 @@ factor_backtest <- function(factors, arguments, assets, weights = c(), reallocat
   # Call the modified factor_ranks function
   factor_output <- factor_ranks(factors = factors, arguments = arguments, assets = assets, weights = weights)
 
-  allocations <- allocate(factor_ranks = factor_output, assets = assets, reallocation_period = reallocation_period, n_long = n_long, n_short = n_short, long_weights = long_weights, short_weights = short_weights, long_decreasing = long_decreasing, short_decreasing = short_decreasing)
+  allocations <- allocate(factor_ranks = factor_output, assets = assets, reallocation_period = reallocation_period, long_weights = long_weights, short_weights = short_weights, long_decreasing = long_decreasing, short_decreasing = short_decreasing, lag_trades = lag_trades)
   
   returns <- Return.calculate(assets)
   returns <- returns[index(allocations)]
@@ -141,10 +160,11 @@ factor_backtest <- function(factors, arguments, assets, weights = c(), reallocat
 
 
 # Example function call
+options(warn = -1) # Warnings are fine unless datasets are small, see allocation comments.
+
 factors <- list("momentum", "CTI")
 arguments <- list(list(n = 15), list(n = 10, slope = .05))
 
 # Call factor_backtest with the factors and arguments
-testobject <- factor_backtest(factors = factors, arguments = arguments, assets = assets, weights = c(.05, .05), reallocation_period = 20, n_long = 3, n_short = 3, long_weights = c(.4, .3, .3), short_weights = c(-.4, -.3, -.3), long_decreasing = FALSE, short_decreasing = TRUE)
-
-tail(testobject)
+testobject <- factor_backtest(factors = factors, arguments = arguments, assets = assets, weights = c(.05, .05), reallocation_period = 20, long_weights = c(.4, .3, .3), short_weights = c(-.4, -.3, -.3), long_decreasing = FALSE, short_decreasing = TRUE, lag_trades = TRUE)
+tail(testobject, 30)
